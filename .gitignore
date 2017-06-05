@@ -1,0 +1,10 @@
+# Created by .ignore support plugin (hsz.mobi)
+
+gui/nilearn_cache/
+gui/tmp/
+.idea/workspace.xml
+data/rsn/aal/
+gui/design.pyc
+gui/settings.pyc
+mapper.pyc
+reports.pyc

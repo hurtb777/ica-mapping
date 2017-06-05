@@ -1,0 +1,7 @@
+numpy
+PyQt4
+nilearn
+sklearn
+nipype
+jinja2
+matplotlib
