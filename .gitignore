@@ -2,7 +2,7 @@
 
 gui/nilearn_cache/
 gui/tmp/
-.idea/workspace.xml
+.idea/
 data/rsn/aal/
 gui/design.pyc
 gui/settings.pyc

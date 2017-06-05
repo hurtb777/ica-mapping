@@ -1,26 +1,29 @@
-import os  # For listing directory methods
+"""
+ica_mapping_gui.py
+"""
+
+# Python Libraries and QT
 from os.path import join as opj  # method to join strings of file paths
-import sys  # We need sys so that we can pass argv to QApplication
-import json
+import os, sys, re, getopt, json
+from functools import partial
+from PyQt4 import QtGui, QtCore, Qt  # Import QT
+mypath = os.getcwd()
+sys.path.append(opj(mypath, '..\\'))
+
+# Mathematical/Neuroimaging/Plotting Libraries
 import numpy as np  # Library to for all mathematical operations
 from nilearn import plotting, image, input_data  # library for neuroimaging
-from PyQt4 import QtGui, QtCore, Qt  # Import QT
-from functools import partial
-import re  # library for regular expressions
 from nibabel.nifti1 import Nifti1Image
-
-# import sip
-# sip.setapi('QVariant', 2)
 import nipype.interfaces.io as nio
-
 import matplotlib.pyplot as plt  # Plotting library
 import matplotlib.gridspec as gridspec
 from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
 
+# Internal imports
 from settings import mri_plots as mp, time_plots as tp  # use items in settings file
 import design  # This file holds our MainWindow and all design related things
-import mapper as map
 from reports import create_html
+import mapper as map
 
 ANATOMICAL_TO_TIMESERIES_PLOT_RATIO = 5
 CONFIGURATION_FILE = '../config.json'
@@ -432,12 +435,25 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
         return [v[prop] for v in self.gd[list_name].itervalues()]
 
 
-def main():
+def main(argv):
+    config_file = None
+    try:
+        opts, args = getopt.getopt(argv, "hi:", ["config_file="])
+    except getopt.GetoptError:
+        print 'ica_mapping_gui.py -i <config_file> '
+        sys.exit(2)
+    for opt, arg in opts:
+        if opt == '-h':
+            print 'ica_mapping_gui.py -i <config_file>'
+            sys.exit()
+        elif opt in ("-i", "--config_file"):
+            config_file = arg
+
     app = QtGui.QApplication(sys.argv)  # A new instance of QApplication
-    form = MapperGUI()  # We set the form to be our ExampleApp (design)
+    form = MapperGUI(configuration_file=config_file)  # We set the form to be our ExampleApp (design)
     form.show()  # Show the form
     app.exec_()  # and execute the app
 
 
 if __name__ == '__main__':  # if we're running file directly and not importing it
-    main()  # run the main function
+    main(sys.argv[1:])  # run the main function
