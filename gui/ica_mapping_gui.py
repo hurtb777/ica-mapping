@@ -6,14 +6,16 @@ ica_mapping_gui.py
 from os.path import join as opj  # method to join strings of file paths
 import os, sys, re, getopt, json
 from functools import partial
-from PyQt4 import QtGui, QtCore, Qt  # Import QT
+#from PyQt4 import QtGui, QtCore, Qt  # Import QT
+from PyQt4 import QtGui, QtCore  # Import QT  #--kw-- 11/30/2017: Qt appears to be unused
 mypath = os.getcwd()
-sys.path.append(opj(mypath, '..\\'))
+sys.path.append(opj(mypath, '..'))  #--kw-- 10/16/2017: changed for compatibility w/ POSIX
+sys.path.append(opj(mypath))   #--kw-- 10/16/2017: sys.path requires both root dir. ica-mapping-master & subdir. ica-mapping-master/gui
 
 # Mathematical/Neuroimaging/Plotting Libraries
 import numpy as np  # Library to for all mathematical operations
 from nilearn import plotting, image, input_data  # library for neuroimaging
-from nibabel.nifti1 import Nifti1Image
+from nibabel.nifti1 import Nifti1Image, Nifti1Pair #--kw-- 11/9/2017: added class for .img/.hdr pair data format
 import nipype.interfaces.io as nio
 import matplotlib.pyplot as plt  # Plotting library
 import matplotlib.gridspec as gridspec
@@ -26,7 +28,7 @@ from reports import create_html
 import mapper as map
 
 ANATOMICAL_TO_TIMESERIES_PLOT_RATIO = 5
-CONFIGURATION_FILE = '../config.json'
+CONFIGURATION_FILE = 'config.json' #--kw-- 12/4/2017: needs to be changed to '../config.json' to run program in spyder, change to 'config.json' for command line
 
 class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
     """
@@ -64,12 +66,7 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
         self.pushButton_outputDir.clicked.connect(self.browse_output_directory)
         self.pushButton_loadFMRI.clicked.connect(partial(self.browse_file, 'fmri'))
         self.pushButton_loadStrucMRI.clicked.connect(partial(self.browse_file, 'smri'))
-        self.pushButton_icaload.clicked.connect(partial(self.browse_folder, self.listWidget_ICAComponents,
-                                                        search_pattern=self.config['ica']['search_pattern'],
-                                                        title="Select ICA Component Directory",
-                                                        list_name="ica",
-                                                       )
-                                               )  # When the button is pressed
+        self.pushButton_icaload.clicked.connect(self.browse_ica_files) #--kw-- 11/29/2017: need new fn. for w/ GIFT v4.0, ica components saved as 4D nifti files, etc.
         self.pushButton_rsnload.clicked.connect(partial(self.browse_folder, self.listWidget_RSN,
                                                         search_pattern=self.config['rsn']['search_pattern'],
                                                         title="Select RSN Directory",
@@ -81,12 +78,12 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
         self.pushButton_loadCSF.clicked.connect(partial(self.browse_file, 'csf_mask'))
         self.pushButton_loadBrain.clicked.connect(partial(self.browse_file, 'brain_mask'))
         self.pushButton_loadSegmentation.clicked.connect(partial(self.browse_file, 'segmentation'))
-        self.pushButton_Plot.clicked.connect(self.update_plots)
+        self.pushButton_Plot.clicked.connect(self.plot_max_overlap) #--kw-- 11/17/2017: default to plot max. overlap between ica & rsn for new plots
 
         self.listWidget_ICAComponents.itemClicked.connect(self.update_gui)
         self.listWidget_RSN.itemClicked.connect(self.update_gui)
         self.listWidget_mappedICANetworks.itemClicked.connect(self.update_mapping)
-        self.listWidget_mappedICANetworks.currentItemChanged.connect(self.update_mapping)
+#        self.listWidget_mappedICANetworks.currentItemChanged.connect(self.update_mapping) #--kw-- 11/16/2017: skip update w/ change, only update w/ click on mappedICANetworks list
 
         self.pushButton_addNetwork.clicked.connect(self.add_mapped_network)
         self.pushButton_rmNetwork.clicked.connect(self.delete_mapped_network)
@@ -98,49 +95,88 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
         self.horizontalSlider_Yslice.sliderReleased.connect(self.update_plots)
         self.horizontalSlider_Zslice.sliderReleased.connect(self.update_plots)
         self.spinBox_numSlices.valueChanged.connect(self.update_plots)
+        
+        self.pushButton_zslice.clicked.connect(self.plot_max_overlap) #--kw-- 11/17/2017: plot max. overlap between ica & rsn 
 
         self.listWidget_ICAComponents.setCurrentRow(0)
         self.listWidget_RSN.setCurrentRow(0)
-        self.mapper = map.Mapper(map_files=self.get_imgobjects('rsn'), in_files=self.get_imgobjects('ica'))
+#        self.mapper = map.Mapper(map_files=self.get_imgobjects('rsn'), map_filenames=self.get_imgobjNames('rsn'),
+#                                 in_files=self.get_imgobjects('ica'), in_filenames=self.get_imgobjNames('ica'))#--kw-- 11/29/2017: need to reset Mapper if values have changed, #--kw-- 11/10/2017: added filenames input, for use in creating dictionary of correlations 
+        
+        self.plot_max_overlaps = False #--kw-- 11/20/2017: after 1st call to plotting fn., update display of plots w/ GUI if true
 
-    def update_gui(self):
-        ica_name = str(self.listWidget_ICAComponents.currentItem().text())
-        rsn_name = str(self.listWidget_RSN.currentItem().text())
-        # print self.mapper.corr
+    def update_gui(self, update_lineEdits=True): #--kw-- 11/16/2017: option to skip lineEdit updates used by update_mapping fn.
+        ica_name = str(self.listWidget_ICAComponents.currentItem().data(QtCore.Qt.UserRole).toString()) #--kw-- 11/16/2017: use original item text, not current text w/ prefix below for corr., etc.
+        rsn_name = str(self.listWidget_RSN.currentItem().data(QtCore.Qt.UserRole).toString())
         if ica_name in self.mapper.corr.keys():
-            new_order = np.argsort(self.mapper.corr[ica_name])[::-1]
             for i in range(self.listWidget_RSN.count()):
                 item = self.listWidget_RSN.item(i)
                 lookup = str(item.data(QtCore.Qt.UserRole).toString())
 
-                item.setText("%s (%0.2f)" %(lookup, self.mapper.corr[ica_name][i]))
-                # self.listWidget_RSN.setIt
+                if lookup in self.config['rsn']['extra_items']: #--kw-- 11/16/2017: skip extra items on rsn list w/o spatial maps
+                    item.setTextColor(QtGui.QColor(0,0,0,100))  #--kw-- 11/15/2017: highlight top 3 matches w/ text transparency
+                elif lookup in self.gd['rsn_duplicates'].keys(): #--kw-- 11/14/2017: mark RSNs w/ duplicate matches with an asteriks
+                    item.setText("%s (%0.2f)***" %(lookup, self.mapper.corr[ica_name][lookup])) #--kw--11/14/2017: added indexing for self.mapper.corr by lookup
+                else:
+                    item.setText("%s (%0.2f)" %(lookup, self.mapper.corr[ica_name][lookup])) #--kw--11/14/2017: added indexing for self.mapper.corr by lookup
+                if lookup not in self.mapper.matches_top3[ica_name].keys(): #--kw-- 11/15/2017: highlight top 3 matches w/ text transparency
+                    item.setTextColor(QtGui.QColor(0,0,0,100))
+                else:
+                    item.setTextColor(QtGui.QColor(0,0,0,255))
         else:
             for i in range(self.listWidget_RSN.count()):
                 item = self.listWidget_RSN.item(i)
                 lookup = str(item.data(QtCore.Qt.UserRole).toString())
                 item.setText(lookup)
 
-        # if rsn_name in self.
         if self.computed_analysis:
-            # cfname = self.gd['rsn']['filepath']
-            pass
-        
-        self.lineEdit_ICANetwork.setText(ica_name)
-        self.lineEdit_mappedICANetwork.setText(rsn_name)
-        
-    def update_mapping(self):
-        ica_lookup, rsn_lookup = self.get_current_networks()
+#            pass
+            self.listWidget_mappedICANetworks.sortItems()
+            for i in range(self.listWidget_ICAComponents.count()): #--kw-- mark ICA comps requiring more analysis
+                item = self.listWidget_ICAComponents.item(i)
+                lookup = str(item.data(QtCore.Qt.UserRole).toString())
+                if lookup in self.gd['mapped'].keys() and lookup not in self.gd['ica_to_RSNduplicates'].keys():
+                    item.setTextColor(QtGui.QColor(0,0,0,70)) #--kw-- display partially transparent text if ica is mapped onto unique rsn_custom_name
+                else:
+                    item.setTextColor(QtGui.QColor(0,0,0,255))
+            for i in range(self.listWidget_mappedICANetworks.count()): #--kw-- similarly, highlight mappings requiring more analysis w/ transparency
+                item = self.listWidget_mappedICANetworks.item(i)
+                ica_lookup, rsn_lookup = item.text().split(' > ')
+                if ica_lookup in self.gd['mapped'].keys() and ica_lookup not in self.gd['ica_to_RSNduplicates'].keys():
+                    item.setTextColor(QtGui.QColor(0,0,0,70)) #--kw-- display partially transparent text if ica is mapped onto unique rsn_custom_name
+                else:
+                    item.setTextColor(QtGui.QColor(0,0,0,255))
+            if ica_name in self.gd['mapped'].keys():
+                if self.gd['mapped'][ica_name]['rsn_lookup']==rsn_name:
+                    self.listWidget_mappedICANetworks.setCurrentItem(self.gd['mapped'][ica_name]['mapped_item'])
+                else:
+                    self.listWidget_mappedICANetworks.setCurrentRow(-1)
+            else:
+                self.listWidget_mappedICANetworks.setCurrentRow(-1)
+            self.plot_max_overlap() #--kw-- automatically update display of plots when updating networks
+                
+        if update_lineEdits: #--kw-- 11/16/2017: added option to skip lineEdit updates used by update_mapping fn.
+           self.lineEdit_ICANetwork.setText(ica_name)
+           self.lineEdit_mappedICANetwork.setText(rsn_name)
+
+    def update_mapping(self, mapped_item=None): #--kw-- 11/16/2017: mapped_item input added to allow change in focus of ica & rsn list of items in response to clicking on map item
+#        ica_lookup, rsn_lookup = self.get_current_networks() #--kw-- 11/16/2017: skip if updating in response to map item list
+        if mapped_item:
+            ica_lookup, rsn_lookup = str(mapped_item.text()).split(' > ')
+        else:
+            mapped_item = str(self.listWidget_mappedICANetworks.currentItem().text())
+            ica_lookup, rsn_lookup = mapped_item.split(' > ')
+
         self.listWidget_ICAComponents.setCurrentItem(self.gd['mapped'][ica_lookup]['ica_item'])
         self.listWidget_RSN.setCurrentItem(self.gd['mapped'][ica_lookup]['rsn_item'])
-        # self.listWidget_ICAComponents.setCurrentItem(self.gd['mapped']['ica_name']['ica_item'])
         
         self.lineEdit_ICANetwork.setText(self.gd['mapped'][ica_lookup]['ica_custom_name'])
         self.lineEdit_mappedICANetwork.setText(self.gd['mapped'][ica_lookup]['rsn_custom_name'])
+        self.update_gui(update_lineEdits=False) #--kw-- update corrs. for rsn text after shifting focus, skip lineEdit updates in favor of above
         
     def reset_gui(self):
         self.listWidget_mappedICANetworks.clear()
-        self.gd = {'fmri': {}, 'smri': {},'ica': {}, 'rsn': {}, 'mapped': {}}
+        self.gd = {'fmri': {}, 'smri': {},'ica': {}, 'rsn': {}, 'mapped': {}, 'rsn_duplicates': {}, 'ica_to_RSNduplicates': {}} #--kw-- 11/16/2017: added dict for rsn's w/ duplicate matches
 
     def add_mapped_network(self):
         ica_lookup, rsn_lookup = self.get_current_networks()
@@ -166,7 +202,28 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
               }
              }
         )
-        self.update_mapping()
+        self.update_duplicate_mappings() #--kw-- 11/16/2017: new fn. used to mark duplicates for rsn display
+        self.update_mapping(map_itemWidget) #--kw-- modified fn. updates foci of lists using input
+        ica_ind = self.listWidget_ICAComponents.currentRow() #--kw-- 11/30/2017: added code to move to next unmapped network
+        ind_max = self.listWidget_ICAComponents.count() - 1
+        mapped_keys = [k for k in self.gd['mapped'].keys() if k not in self.gd['ica_to_RSNduplicates'].keys()]
+        while (ica_ind <= ind_max):
+            if str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString()) in mapped_keys:
+                ica_ind += 1
+            else:
+                break
+        if ica_ind > ind_max:
+            ica_ind = ica_ind % ind_max - 1 #--kw-- 11/30/2017: loop through ica indices from beginning
+            while (ica_ind <= ind_max) and (str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString()) in mapped_keys):
+                ica_ind += 1
+        if (ica_ind <= ind_max) and (str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString()) not in mapped_keys):
+            self.listWidget_ICAComponents.setCurrentRow(ica_ind)
+            ica_lookup = str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString())
+            rsn_lookup = [k for k in self.mapper.matches_top3[ica_lookup].keys() if self.mapper.matches_top3[ica_lookup][k]==max(self.mapper.matches_top3[ica_lookup].values())][0] #--kw-- 11/30/2017: find name of top rsn match & set rsn list appropriately
+            self.listWidget_RSN.setCurrentItem(self.gd['rsn'][rsn_lookup]['widget'])
+        else:
+            self.listWidget_ICAComponents.setCurrentRow(0)
+        self.update_gui()#--kw-- 11/16/2017: changing mappings may change display
         
     def delete_mapped_network(self):
         for item in self.listWidget_mappedICANetworks.selectedItems():
@@ -174,9 +231,27 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
             self.listWidget_mappedICANetworks.takeItem(self.listWidget_mappedICANetworks.row(item))
             del self.gd['mapped'][ica_name]
             
+    def update_duplicate_mappings(self): #--kw-- 11/16/2017: new fn., counts duplicated rsn matches
+        rsn_matched = []
+        ica_to_RSNduplicates = {}
+        for ica in self.gd['mapped'].keys():
+            rsn_matched.append(self.gd['mapped'][ica]['rsn_custom_name'])
+        ex = re.compile('Noise*')
+        rsn_noise = filter(ex.search, rsn_matched)
+        ex = re.compile('Other*')
+        rsn_other = filter(ex.search, rsn_matched)
+        rsn_matched = [k for k in rsn_matched if k not in rsn_noise not in rsn_other]
+        rsn_duplicated = {rsn: rsn_matched.count(rsn) for rsn in rsn_matched if rsn_matched.count(rsn) > 1}
+        for ica in self.gd['mapped'].keys():
+            rsn = self.gd['mapped'][ica]['rsn_custom_name']
+            if rsn in rsn_duplicated.keys():
+                ica_to_RSNduplicates[ica] = rsn
+        self.gd['rsn_duplicates'] = rsn_duplicated
+        self.gd['ica_to_RSNduplicates'] = ica_to_RSNduplicates
+            
     def browse_file(self, file_type, pushButton=None):
         fname = QtGui.QFileDialog.getOpenFileName(self, caption="Open Image", directory=".",
-                                                  filter="Image Files (*.nii.gz *.nii)")
+                                                  filter="Image Files (*.nii.gz *.nii *.img)")#--kw-- 10/17/2017: changed to load images saved in paired .img/.hdr format
         self.load_base_file(fname, file_type=file_type)
 
     def load_base_file(self, file_name, file_type='fmri'):
@@ -184,33 +259,125 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
             self.gd.update({file_type: {'full_path': file_name, 'img': image.load_img(str(file_name))}})
 
     def browse_folder(self, listWidget=None, search_pattern='\w+', title="Select Directory", list_name='ica'):
-        directory = QtGui.QFileDialog.getExistingDirectory(self, title)
+        directory = str(QtGui.QFileDialog.getExistingDirectory(self, title)) #--kw-- 12/4/2017: added output as string
         if search_pattern is not None:
             self.find_files(directory, "*", search_pattern, listWidget, list_name)
         return directory
+    
+    def browse_ica_files(self): #--kw-- 11/29/2017: new fn., includes functionality to load 4D nifti files
+        listWidget=self.listWidget_ICAComponents
+        
+        search_pattern=self.config['ica']['search_pattern']
+        title='Select all ICA Component Files'
+        list_name='ica'
+        selected_files = QtGui.QFileDialog.getOpenFileNames(self, caption=title, directory=".", filter="Image Files (*.nii.gz *.nii *.img)")
+        selected_files = [str(f) for f in selected_files if isinstance(selected_files, QtCore.QStringList)]  
+        
+        listWidget.clear() # In case there are any existing elements in the list
+        self.gd['ica'].clear()
+        
+        r = re.compile(search_pattern)
+        filtered_files = filter(r.search, selected_files)
+
+        if len(filtered_files) is 1:
+            t_dim = image.load_img(filtered_files).shape[3]
+            if t_dim > 1: #if 4D nifti vol...
+                for t in range(t_dim):
+                    match = re.search(r, filtered_files[0])
+                    lookup_key = match.groups()[0]
+                    lookup_key = lookup_key + ',%d' %(t+1) #--kw-- 11/30/2017: add suffix to display name
+                    item = QtGui.QListWidgetItem(lookup_key)
+                    listWidget.addItem(item)
+                    item.setData(QtCore.Qt.UserRole, lookup_key)
+                    self.gd[list_name][lookup_key] = {'img': image.index_img(filtered_files[0], t),
+                                                      'filepath': filtered_files,
+                                                      'name': lookup_key,
+                                                      'widget': item}
+            else:
+                file_name = filtered_files[0]
+                match = re.search(r, file_name)
+                lookup_key = match.groups()[0]
+                item = QtGui.QListWidgetItem(lookup_key)
+                listWidget.addItem(item)
+                item.setData(QtCore.Qt.UserRole, lookup_key)
+                self.gd[list_name][lookup_key] = {'img': image.load_img(filtered_files[0]),
+                                                  'filepath': filtered_files[0],
+                                                  'name': lookup_key,
+                                                  'widget': item}
+        else:
+            for file_name in filtered_files:
+                match = re.search(r, file_name)
+                lookup_key = match.groups()[0]
+                item = QtGui.QListWidgetItem(lookup_key)
+                listWidget.addItem(item)
+                item.setData(QtCore.Qt.UserRole, lookup_key)
+                self.gd[list_name][lookup_key] = {'img': image.load_img(file_name),
+                                                  'filepath': file_name,
+                                                  'name': lookup_key,
+                                                  'widget': item}
+                
+
 
     def browse_output_directory(self):
-        directory = QtGui.QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        directory = str(QtGui.QFileDialog.getExistingDirectory(self, "Select Output Directory")) #--kw-- 12/4/2017: if needed, convert output to string
         if directory:
             self.lineEdit_outputDir.setText(directory)
+        return directory #--kw-- 12/4/2017: added return for fn.
 
     def find_files(self, directory, template, search_pattern, listWidget, list_name, extra_items=None):
         if directory: # if user didn't pick a directory don't continue
             ds = nio.DataGrabber(base_directory=directory, template=template, sort_filelist=True)
             all_nifti_files = ds.run().outputs.outfiles
             listWidget.clear() # In case there are any existing elements in the list
-            r = re.compile(search_pattern)
-            list_items = []
-            for file_name in filter(r.search, all_nifti_files):
-                match = re.search(r, file_name)
-                lookup_key = match.groups()[0]
-                item = QtGui.QListWidgetItem(lookup_key)
-                listWidget.addItem(item)
-                item.setData(QtCore.Qt.UserRole, lookup_key)
-                self.gd[list_name][lookup_key] = {'img': image.load_img(opj(directory, file_name)),
-                                                  'filepath': opj(directory, file_name),
-                                                  'name': lookup_key,
-                                                  'widget': item}
+            r = re.compile(search_pattern)     
+#            list_items = [] #--kw-- 11/30/2017: unused variable
+            filtered_files = filter(r.search, all_nifti_files) #--kw-- 11/30/2017: added functionality to handle 4d Nifti files
+            if len(filtered_files) is 1:
+                t_dim = image.load_img(filtered_files).shape[3]
+                if t_dim > 1: #if 4D nifti vol...
+                    for t in range(t_dim):
+                        match = re.search(r, filtered_files[0])
+                        lookup_key = match.groups()[0]
+                        lookup_key = lookup_key + ',%d' %(t+1) #--kw-- 11/30/2017: add suffix to display name
+                        item = QtGui.QListWidgetItem(lookup_key)
+                        listWidget.addItem(item)
+                        item.setData(QtCore.Qt.UserRole, lookup_key)
+                        self.gd[list_name][lookup_key] = {'img': image.index_img(filtered_files[0], t),
+                                                          'filepath': filtered_files,
+                                                          'name': lookup_key,
+                                                          'widget': item}
+                else:
+                    file_name = filtered_files[0]
+                    match = re.search(r, file_name)
+                    lookup_key = match.groups()[0]
+                    item = QtGui.QListWidgetItem(lookup_key)
+                    listWidget.addItem(item)
+                    item.setData(QtCore.Qt.UserRole, lookup_key)
+                    self.gd[list_name][lookup_key] = {'img': image.load_img(filtered_files[0]),
+                                                      'filepath': filtered_files[0],
+                                                      'name': lookup_key,
+                                                      'widget': item}
+            else:
+                for file_name in filtered_files:
+                    match = re.search(r, file_name)
+                    lookup_key = match.groups()[0]
+                    item = QtGui.QListWidgetItem(lookup_key)
+                    listWidget.addItem(item)
+                    item.setData(QtCore.Qt.UserRole, lookup_key)
+                    self.gd[list_name][lookup_key] = {'img': image.load_img(file_name),
+                                                      'filepath': file_name,
+                                                      'name': lookup_key,
+                                                      'widget': item}
+#            for file_name in filter(r.search, all_nifti_files): #--kw-- 11/30/2017: added functionality to handle 4d Nifti files above 
+#                match = re.search(r, file_name)
+#                lookup_key = match.groups()[0]
+#                item = QtGui.QListWidgetItem(lookup_key)
+#                listWidget.addItem(item)
+#                item.setData(QtCore.Qt.UserRole, lookup_key)
+#                self.gd[list_name][lookup_key] = {'img': image.load_img(opj(directory, file_name)),
+#                                                  'filepath': opj(directory, file_name),
+#                                                  'name': lookup_key,
+#                                                  'widget': item}
             if extra_items:
                 for extra in extra_items:
                     item = QtGui.QListWidgetItem(extra)
@@ -252,12 +419,66 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
 
     def run_analysis(self):
         btn_txt = self.pushButton_runAnalysis.text()
-        self.pushButton_runAnalysis.setText("Creating")
-        lookup_val = str(self.listWidget_ICAComponents.currentItem().data(QtCore.Qt.UserRole).toString())
-        corr = self.mapper.run_one(self.gd['ica'][lookup_val]['img'], label=lookup_val) \
-            if lookup_val not in self.mapper.corr.keys() else self.mapper.corr[lookup_val]
+        self.pushButton_runAnalysis.setText("Creating...") #--kw-- 11/10/2017: tiny & possibly irrelevant asthetic tweak
+        if self.listWidget_ICAComponents.count() == 0: self.browse_ica_files()
+        if self.listWidget_RSN.count() == 0:
+            self.browse_folder(listWidget=self.listWidget_RSN,
+                               search_pattern=self.config['rsn']['search_pattern'],
+                               title="Select RSN Directory",
+                               list_name="rsn")
+        self.mapper = map.Mapper(map_files=self.get_imgobjects('rsn'), map_filenames=self.get_imgobjNames('rsn'),
+                                 in_files=self.get_imgobjects('ica'), in_filenames=self.get_imgobjNames('ica')) #--kw-- 11/29/2017: need to reset Mapper if values have changed
+
+        self.mapper.run()  #--kw-- 11/9/2017: changed to automatically run entire analysis
+#        lookup_val = str(self.listWidget_ICAComponents.currentItem().data(QtCore.Qt.UserRole).toString())
+#        corr = self.mapper.run_one(self.gd['ica'][lookup_val]['img'], label=lookup_val) \
+#            if lookup_val not in self.mapper.corr.keys() else self.mapper.corr[lookup_val]
+        for ica_lookup, rsn_lookup in self.mapper.matches.iteritems(): #--kw-- 11/13/2017: added.  Loop over current matches & add results to mapping list
+            if ica_lookup not in self.gd['mapped'].keys() and rsn_lookup is not None:
+                name = "%s > %s" %(ica_lookup, rsn_lookup)
+                map_itemWidget = QtGui.QListWidgetItem(name)
+                self.listWidget_mappedICANetworks.addItem(map_itemWidget)  
+                ica_custom_name = ica_lookup
+                rsn_custom_name = rsn_lookup
+                ica_item = self.listWidget_ICAComponents.findItems(ica_lookup, QtCore.Qt.MatchContains)[0]
+                rsn_item = self.listWidget_RSN.findItems(rsn_lookup, QtCore.Qt.MatchContains)[0]
+                self.gd['mapped'].update(
+                   {ica_lookup:  # 1 Mapped Network per ICA 
+                      {'rsn_lookup': rsn_lookup, #  RSN name 
+                       'custom_name': name,  # Composite user's custom Name
+                       'ica_custom_name': ica_custom_name,  # User's Custom Name
+                       'rsn_custom_name': rsn_custom_name,  # User's Custom Name
+                       'ica_item': ica_item,  # Index of the ICA listWidget 
+                       'rsn_item' : rsn_item,  # Index of the RSN listWidget
+                       'mapped_item' : map_itemWidget,  # QListWidgetItem in the mapped listWidget
+                       }
+                    }
+                )
+        self.update_duplicate_mappings() #--kw-- 11/16/2017: new fn., for rsn display
+        self.computed_analysis = True #--kw-- 11/13/2017: moved line from below, computed_analysis info used for display in update_gui
+        if self.listWidget_ICAComponents.currentItem() is None: self.listWidget_ICAComponents.setCurrentRow(0)  #--kw-- 11/30/2017: call to self.update_gui() requires current items specified for both lists
+        if self.listWidget_RSN.currentItem() is None: self.listWidget_RSN.setCurrentRow(0)  #--kw-- 11/30/2017: call to self.update_gui() requires current items specified for both lists
+        ica_ind = self.listWidget_ICAComponents.currentRow() #--kw-- 11/30/2017: added code to move to next unmapped network
+        ind_max = self.listWidget_ICAComponents.count() - 1
+        mapped_keys = [k for k in self.gd['mapped'].keys() if k not in self.gd['ica_to_RSNduplicates'].keys()]
+        while (ica_ind <= ind_max):
+            if str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString()) in mapped_keys:
+                ica_ind += 1
+            else:
+                break
+        if ica_ind > ind_max:
+            ica_ind = ica_ind % ind_max - 1 #--kw-- 11/30/2017: loop through ica indices from beginning
+            while (ica_ind <= ind_max) and (str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString()) in mapped_keys):
+                ica_ind += 1
+        if (ica_ind <= ind_max) and (str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString()) not in mapped_keys):
+            self.listWidget_ICAComponents.setCurrentRow(ica_ind)
+            ica_lookup = str(self.listWidget_ICAComponents.item(ica_ind).data(QtCore.Qt.UserRole).toString())
+            rsn_lookup = [k for k in self.mapper.matches_top3[ica_lookup].keys() if self.mapper.matches_top3[ica_lookup][k]==max(self.mapper.matches_top3[ica_lookup].values())][0] #--kw-- 11/30/2017: find name of top rsn match & set rsn list appropriately
+            self.listWidget_RSN.setCurrentItem(self.gd['rsn'][rsn_lookup]['widget'])
+        else:
+            self.listWidget_ICAComponents.setCurrentRow(0)
         self.update_gui()
-        self.computed_analysis = True
+#        self.computed_analysis = True#--kw-- 11/13/2017: moved to above
         self.pushButton_runAnalysis.setText(btn_txt)
 
     def generate_report(self):
@@ -265,10 +486,15 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
         self.pushButton_createReport.setText("Creating")
         fx = plt.figure(figsize=(10,4))
         ft = plt.figure(figsize=(10, 2))
-        directory = str(self.lineEdit_outputDir.text())
+        if str(self.lineEdit_outputDir.text()) is '': #--kw-- 11/30/2017: ensure output dir. is specified
+            directory = self.browse_output_directory()
+        else:
+            directory = str(self.lineEdit_outputDir.text())
         if not os.path.exists(directory):
             os.makedirs(directory)
         for u, v in self.gd['mapped'].iteritems():
+            if self.plot_max_overlaps:   #--kw-- 11/27/2017: plot max. overlap in report
+                self.plot_max_overlap(ica_lookup=u, rsn_lookup=v['rsn_lookup']) 
             options = self.get_plot_options(ica_lookup=u, rsn_lookup=v['rsn_lookup'])
             self.plot_x(fx, **options)
             self.plot_t(ft, **options)
@@ -289,7 +515,8 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
                                    title='ICA Component %s' % ica_lookup,
                                    cut_coords=coords, display_mode=display, annotate=True,
                                    draw_cross=True, colorbar=True)
-        if show_rsn:
+#        if show_rsn:
+        if show_rsn and self.gd['rsn'][rsn_lookup]['img'] is not None: #--kw-- 11/27/2017: only plot rsns w/ associated spatial maps, skip for Noise_artifact & Other_nonnoise_rsn
             d.add_contours(self.gd['rsn'][rsn_lookup]['img'], filled=mp['rsn']['filled'], alpha=mp['rsn']['alpha'],
                            levels=[mp['rsn']['levels']], colors=mp['rsn']['colors'])
         if show_wm:
@@ -394,6 +621,29 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
         self.label_Yslice.setText("Y: %d" % y)
         self.label_Zslice.setText("Z: %d" % z)
         return x, y, z
+    
+    def plot_max_overlap(self, ica_lookup=None, rsn_lookup=None): #--kw-- 11/17/2017: fn. for 'Show Largest Overlap' pushbutton
+        if self.computed_analysis:
+            if ica_lookup is None or rsn_lookup is None:
+                ica_lookup, rsn_lookup = self.get_current_networks()
+            if rsn_lookup in self.mapper.matches_max_coords[ica_lookup]:
+                x,y,z = self.mapper.matches_max_coords[ica_lookup][rsn_lookup]
+            else:
+                ica_img = [self.gd['ica'][ica_lookup]['img']]
+                map_img = [self.gd['rsn'][rsn_lookup]['img']]
+                ica_name = [ica_lookup]
+                rsn_name = [rsn_lookup]
+                self.mapper.matches_max_coords[ica_lookup].update(self.mapper.find_max_coords(ica_img, map_img, ica_name, rsn_name)[ica_lookup])
+                x,y,z = self.mapper.matches_max_coords[ica_lookup][rsn_lookup]
+                
+            self.horizontalSlider_Xslice.setValue(x)
+            self.horizontalSlider_Yslice.setValue(y)
+            self.horizontalSlider_Zslice.setValue(z)
+            self.update_plots()
+        else:
+            pass
+        self.plot_max_overlaps = True #--kw-- plot pos. of max overlap during subsequent calls to update_gui fn.
+        
 
     def get_current_networks(self):
         ica_lookup = str(self.listWidget_ICAComponents.currentItem().data(QtCore.Qt.UserRole).toString())
@@ -403,7 +653,7 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
     def get_plot_options(self, ica_lookup, rsn_lookup):
         display, coords = self.apply_slice_views()
         options = {'ica_lookup': ica_lookup, 'rsn_lookup': rsn_lookup, 'display': display, 'coords': coords}
-        if isinstance(self.gd['rsn'][rsn_lookup]['img'], Nifti1Image):
+        if isinstance(self.gd['rsn'][rsn_lookup]['img'], (Nifti1Image, Nifti1Pair)): #--kw-- 11/9/2017: added class for .img/.hdr pair data format
             options.update({'show_rsn': True})
         if self.checkBox_showWM.isChecked() and 'wm_mask' in self.gd.keys():
             options.update({'show_wm': True})
@@ -429,7 +679,16 @@ class MapperGUI(QtGui.QMainWindow, design.Ui_MainWindow):
         return self.get_guiitem(list_name, 'filepath')
 
     def get_imgobjects(self, list_name):
-        return [img for img in self.get_guiitem(list_name, 'img') if isinstance(img, Nifti1Image)]
+        return [img for img in self.get_guiitem(list_name, 'img') if isinstance(img, (Nifti1Image, Nifti1Pair))] #--kw-- 11/9/2017: added class for .img/.hdr pair data format
+    
+    def get_imgobjNames(self, list_name): #--kw-- 11/13/2017: added fn. to retrieve names associated w/ RSNs, filtering list items w/o templates
+        imgs = [True if isinstance(img, (Nifti1Image, Nifti1Pair)) else False for img in self.get_guiitem(list_name, 'img')]
+        names_all = [name for name in self.get_guiitem(list_name, 'name')]
+        names = []
+        for i, name in enumerate(names_all):
+            if imgs[i]:
+                names.append(name)
+        return(names)
 
     def get_guiitem(self, list_name, prop):
         return [v[prop] for v in self.gd[list_name].itervalues()]
@@ -440,11 +699,13 @@ def main(argv):
     try:
         opts, args = getopt.getopt(argv, "hi:", ["config_file="])
     except getopt.GetoptError:
-        print 'ica_mapping_gui.py -i <config_file> '
+#        print 'ica_mapping_gui.py -i <config_file> '
+        print('ica_mapping_gui.py -i <config_file> ')  #--kw-- 10/16/2017: changed for future compatibility w/ python3
         sys.exit(2)
     for opt, arg in opts:
         if opt == '-h':
-            print 'ica_mapping_gui.py -i <config_file>'
+#            print 'ica_mapping_gui.py -i <config_file>'
+            print('ica_mapping_gui.py -i <config_file>')  #--kw-- 10/16/2017: changed for future compatibility w/ python3
             sys.exit()
         elif opt in ("-i", "--config_file"):
             config_file = arg
