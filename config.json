@@ -1,23 +1,23 @@
 {
   "output_directory": "tmp/",
   "ica":{
-    "directory": "../data/ica/",
+    "directory": "",
     "template": "*",
-    "search_pattern": "(\\w+)(\\.nii\\.gz|\\.nii)$"
+    "search_pattern": "(\\w+)(\\.nii\\.gz|\\.nii|\\.img)$"
   },
   "rsn":{
-    "directory": "../data/rsn/Functional_ROIs/",
-    "template": "*/*.nii.gz",
-    "search_pattern": "(\\w+)\\\\(\\w+)(\\.nii\\.gz|\\.nii)$",
-    "extra_items": ["Noise", "Other"]
+    "directory": "data/rsn/",
+    "template": "*/*/*.nii.gz",
+    "search_pattern": "(\\w+)(\\.nii\\.gz|\\.nii)$",
+    "extra_items": ["Noise_artifact", "Other_nonartifact_RSN"]
   },
-  "fmri_file": "../data/func/wrsub-01_task-RestingState_run-1_bold_trim_st_mcf_regfilt_filt.nii",
-  "smri_file": "../data/anat/wsub-01_FSPGR.nii",
+  "fmri_file": "data/func/wrsub-01_task-RestingState_run-1_bold_trim_st_mcf_regfilt_filt.nii",
+  "smri_file": "data/anat/wsub-01_FSPGR.nii",
   "masks": {
-    "gm": "../data/anat/rwc1sub-01_FSPGR.nii",
-    "wm": "../data/anat/rwc2sub-01_FSPGR.nii",
-    "csf": "../data/anat/rwc3sub-01_FSPGR.nii",
-    "brain": "../data/anat/wsub-01_FSPGR_brain_mask.nii",
+    "gm": "data/anat/rwc1sub-01_FSPGR.nii",
+    "wm": "data/anat/rwc2sub-01_FSPGR.nii",
+    "csf": "data/anat/rwc3sub-01_FSPGR.nii",
+    "brain": "data/anat/wsub-01_FSPGR_brain_mask.nii",
     "cortical_segmentation": ""
   }
 }
